@@ -9,22 +9,13 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-static void * 
-ngx_http_upstream_static_init_root();
+static ngx_int_t ngx_http_upstream_static_init_root(ngx_conf_t *cf);
 
-static char * ngx_http_upstream_static_rule(ngx_conf_t *cf, ngx_command_t *cmd, 
-    void *conf);
-
+static char * ngx_http_upstream_static_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_upstream_static_init(ngx_conf_t *cf);
-
-static void * 
-ngx_http_upstream_static_create_loc_conf(ngx_conf_t *cf);
-
-static char * 
-ngx_http_upstream_static_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
-
-static ngx_int_t
-ngx_http_upstream_static_handler(ngx_http_request_t *r);
+static void * ngx_http_upstream_static_create_loc_conf(ngx_conf_t *cf);
+static char * ngx_http_upstream_static_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
+static ngx_int_t ngx_http_upstream_static_handler(ngx_http_request_t *r);
 
 
 static ngx_command_t  ngx_http_upstream_static_module_commands[] = {
@@ -88,8 +79,7 @@ ngx_module_t  ngx_http_upstream_static_module = {
 
 
 static ngx_int_t
-ngx_http_upstream_static_handler(ngx_http_request_t *r)
-{
+ngx_http_upstream_static_handler(ngx_http_request_t *r){
     return NGX_OK;
 }
 
@@ -98,7 +88,7 @@ ngx_http_upstream_static_create_loc_conf(ngx_conf_t *cf) {
     return NGX_OK;
 }
 
-
+ 
 static char * 
 ngx_http_upstream_static_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     return NGX_OK;
@@ -110,12 +100,10 @@ ngx_http_upstream_static_rule(ngx_conf_t *cf, ngx_command_t *cmd,  void *conf) {
 }
 
 // 初始化缓存文件的地址，判断文件夹是否存在，不存在，则新建
-static void *
-ngx_http_upstream_static_init_root() {
-
-
+static ngx_int_t
+ngx_http_upstream_static_init_root(ngx_conf_t *cf) {
+    return NGX_OK;
 }
-
 
 
 static ngx_int_t 
