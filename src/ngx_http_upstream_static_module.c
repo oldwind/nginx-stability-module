@@ -11,37 +11,34 @@
 
 static ngx_int_t ngx_http_upstream_static_init_root(ngx_conf_t *cf);
 
-static char * ngx_http_upstream_static_rule(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
 static ngx_int_t ngx_http_upstream_static_init(ngx_conf_t *cf);
 static void * ngx_http_upstream_static_create_loc_conf(ngx_conf_t *cf);
 static char * ngx_http_upstream_static_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_upstream_static_handler(ngx_http_request_t *r);
 
 
-static ngx_command_t  ngx_http_upstream_static_module_commands[] = {
+typedef struct {
+    ngx_int_t          size;
+    ngx_int_t          active_time;
+} ngx_http_upstream_static_conf_t;
 
-    // 将upstream静态化缓存保存地址
-    // { ngx_string("upstream_static_root"),
-    //     NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-    //     ngx_http_upstream_static_rule,
-    //     NGX_HTTP_LOC_CONF_OFFSET,
-    //     0,
-    //     NULL },
+
+static ngx_command_t  ngx_http_upstream_static_module_commands[] = {
 
     // 将upstream内容静态化的内容大小，超过限制，不做静态化
     { ngx_string("upstream_static_size"),
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-        ngx_http_upstream_static_rule,
+        ngx_conf_set_size_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        0,
+        offsetof(ngx_http_upstream_static_conf_t, size),
         NULL },
 
     // upstream内容保存有效时间
     { ngx_string("upstream_static_active_time"),
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-        ngx_http_upstream_static_rule,
+        ngx_conf_set_size_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        0,
+        offsetof(ngx_http_upstream_static_conf_t, active_time),
         NULL },    
 
     ngx_null_command
@@ -80,8 +77,17 @@ ngx_module_t  ngx_http_upstream_static_module = {
 
 static ngx_int_t
 ngx_http_upstream_static_handler(ngx_http_request_t *r){
+    
+    // 获取配置信息
+    ngx_http_upstream_static_conf_t * uscf;
+    uscf = ngx_http_get_module_loc_conf(r, ngx_http_upstream_static_module);
+
+
+
+
     return NGX_OK;
 }
+
 
 static void * 
 ngx_http_upstream_static_create_loc_conf(ngx_conf_t *cf) {
@@ -94,10 +100,7 @@ ngx_http_upstream_static_merge_loc_conf(ngx_conf_t *cf, void *parent, void *chil
     return NGX_OK;
 }
 
-static char * 
-ngx_http_upstream_static_rule(ngx_conf_t *cf, ngx_command_t *cmd,  void *conf) {
-    return "";
-}
+
 
 // 初始化缓存文件的地址，判断文件夹是否存在，不存在，则新建
 static ngx_int_t
