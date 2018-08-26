@@ -79,10 +79,10 @@ static ngx_int_t
 ngx_http_upstream_static_handler(ngx_http_request_t *r){
     
     // 获取配置信息
-    ngx_http_upstream_static_conf_t * uscf;
-    uscf = ngx_http_get_module_loc_conf(r, ngx_http_upstream_static_module);
+    // ngx_http_upstream_static_conf_t * uscf;
+    //uscf = ngx_http_get_module_loc_conf(r, ngx_http_upstream_static_module);
 
-
+    printf("hello");
 
 
     return NGX_OK;
@@ -91,12 +91,24 @@ ngx_http_upstream_static_handler(ngx_http_request_t *r){
 
 static void * 
 ngx_http_upstream_static_create_loc_conf(ngx_conf_t *cf) {
-    return NGX_OK;
+    ngx_http_upstream_static_conf_t *uscf;
+    uscf = ngx_pcalloc(cf->pool, sizeof(ngx_http_fastcgi_loc_conf_t));
+    if (conf == NULL) {
+        return NULL;
+    }
+
+    uscf->active_time = NGX_CONF_UNSET_UINT;
+    uscf->size        = NGX_CONF_UNSET_UINT;
+
+    return uscf;
 }
 
  
 static char * 
 ngx_http_upstream_static_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
+    
+
+
     return NGX_OK;
 }
 
