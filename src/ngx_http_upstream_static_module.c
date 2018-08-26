@@ -79,10 +79,8 @@ static ngx_int_t
 ngx_http_upstream_static_handler(ngx_http_request_t *r){
     
     // 获取配置信息
-    // ngx_http_upstream_static_conf_t * uscf;
-    //uscf = ngx_http_get_module_loc_conf(r, ngx_http_upstream_static_module);
-
-    printf("hello");
+    ngx_http_upstream_static_conf_t * uscf;
+    uscf = ngx_http_get_module_loc_conf(r, ngx_http_upstream_static_module);
 
 
     return NGX_OK;
@@ -106,12 +104,14 @@ ngx_http_upstream_static_create_loc_conf(ngx_conf_t *cf) {
  
 static char * 
 ngx_http_upstream_static_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
-    
+    ngx_http_upstream_static_conf_t *prev = parent;
+    ngx_http_upstream_static_conf_t *conf = child;
 
+    ngx_conf_merge_uint_value(conf->size, prev->size, 1024);
+    ngx_conf_merge_uint_value(conf->active_time, prev->active_time, 300);
 
-    return NGX_OK;
+    return NGX_CONF_OK;
 }
-
 
 
 // 初始化缓存文件的地址，判断文件夹是否存在，不存在，则新建
