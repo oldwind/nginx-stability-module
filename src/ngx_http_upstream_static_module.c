@@ -90,8 +90,8 @@ ngx_http_upstream_static_handler(ngx_http_request_t *r){
 static void * 
 ngx_http_upstream_static_create_loc_conf(ngx_conf_t *cf) {
     ngx_http_upstream_static_conf_t *uscf;
-    uscf = ngx_pcalloc(cf->pool, sizeof(ngx_http_fastcgi_loc_conf_t));
-    if (conf == NULL) {
+    uscf = ngx_pcalloc(cf->pool, sizeof(ngx_http_upstream_static_module));
+    if (uscf == NULL) {
         return NULL;
     }
 
@@ -107,8 +107,8 @@ ngx_http_upstream_static_merge_loc_conf(ngx_conf_t *cf, void *parent, void *chil
     ngx_http_upstream_static_conf_t *prev = parent;
     ngx_http_upstream_static_conf_t *conf = child;
 
-    ngx_conf_merge_uint_value(conf->size, prev->size, 1024);
-    ngx_conf_merge_uint_value(conf->active_time, prev->active_time, 300);
+    ngx_conf_merge_value(conf->size, prev->size, 1024);
+    ngx_conf_merge_value(conf->active_time, prev->active_time, 300);
 
     return NGX_CONF_OK;
 }
