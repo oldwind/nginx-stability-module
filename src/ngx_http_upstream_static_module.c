@@ -82,6 +82,7 @@ ngx_http_upstream_static_handler(ngx_http_request_t *r){
     ngx_http_upstream_static_conf_t * uscf;
     uscf = ngx_http_get_module_loc_conf(r, ngx_http_upstream_static_module);
 
+    // 
 
     return NGX_OK;
 }
