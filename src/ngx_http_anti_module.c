@@ -12,22 +12,22 @@
 // 计数器的hash结构，开链方式，val统一是int类型
 typedef struct anti_hash_t{ 
     ngx_int_t expire_tm;
-    ngx_str_t *key;
+    ngx_str_t key;
     ngx_int_t val;
     struct anti_hash_t * next;
 } anti_hash_t;
 
 
-
 typedef struct {
-    ngx_int_t    anti_cache_type;
-    ngx_int_t    anti_cache_key;
-    ngx_int_t    anti_cache_key_hash_length;
-    ngx_int_t    anti_frozen_time;
-    ngx_int_t    anti_use_redis;
-    ngx_int_t    anti_redis_address;
-    ngx_int_t    anti_redis_connect_keeplive;
-    anti_hash_t ** anti_hash;
+    ngx_int_t       anti_cache_type;
+    ngx_int_t       anti_cache_key;
+    ngx_int_t       anti_hash_size;
+    ngx_int_t       anti_frozen_time;
+    ngx_int_t       anti_use_redis;
+    ngx_int_t       anti_redis_address;
+    ngx_int_t       anti_redis_connect_keeplive;
+    anti_hash_t     **anti_hash;
+    ngx_shm_zone_t  *shm_zone;
 } ngx_http_anti_conf_t;
 
 
@@ -53,7 +53,7 @@ static ngx_int_t
     anti_hash_tbl_find(anti_hash_t  ** anti_hash, ngx_str_t * str, ngx_int_t hash_size);
 
 static ngx_int_t 
-    anti_hash_tbl_set(ngx_pool_t *pool, anti_hash_t ** anti_hash, ngx_str_t * str, ngx_int_t hash_size, ngx_int_t val, ngx_int_t expire_tm); 
+    anti_hash_tbl_set(ngx_http_anti_conf_t *ancf,  ngx_str_t * str,  ngx_int_t val, ngx_int_t expire_tm); 
 
 // static ngx_int_t 
 //     anti_hash_tbl_del(anti_hash_t  ** anti_hash, ngx_str_t * str, ngx_int_t hash_size);
@@ -75,11 +75,11 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
         offsetof(ngx_http_anti_conf_t, anti_cache_key),
         NULL },
 
-    { ngx_string("anti_cache_key_hash_length"),
+    { ngx_string("anti_hash_size"),
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
         ngx_conf_set_size_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
-        offsetof(ngx_http_anti_conf_t, anti_cache_key_hash_length),
+        offsetof(ngx_http_anti_conf_t, anti_hash_size),
         NULL },
 
     { ngx_string("anti_frozen_time"),
@@ -180,9 +180,9 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     ngx_str_t key = ngx_string("sss");
     ngx_int_t len = key.len + ngx_strlen(uri);
 
-    char str[20];
-    sprintf(str, "ip=%d", (int)s_addr);   
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
+    char str[100];
+    // sprintf(str, "ip=%d", (int)s_addr);   
+    // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
 
     if (len <= 0) {
         return NGX_OK;
@@ -194,12 +194,19 @@ ngx_http_anti_handler(ngx_http_request_t *r){
 
     // 测试hashtable set
     ngx_str_t test_str = ngx_string("/sisisisis?sdajfda");
-    anti_hash_tbl_set(r->pool, hash_header, &test_str, hash_size, 1, 12345678);
-
+    
     // 测试hashtable find
-    anti_hash_tbl_find(hash_header, &test_str, hash_size);
+    ngx_int_t num = anti_hash_tbl_find(hash_header, &test_str, hash_size);
 
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "come here ! baby");
+    num ++;
+
+    anti_hash_tbl_set(r->pool, hash_header, &test_str, hash_size, num, 12345678);
+
+    sprintf(str, "request_tm=%ld", num);
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
+
+
+
 
 
     // 访问共享内存，判断是否超过限制
@@ -243,32 +250,54 @@ anti_hash_tbl_find(anti_hash_t ** hash_header, ngx_str_t * find_str, ngx_int_t h
     
     while (hash_tmp != NULL ) {
 
-        if (ngx_strcmp(hash_tmp->key->data, find_str->data)) {
-            return NGX_OK;
+        if (ngx_strcmp(hash_tmp->key.data, find_str->data)) {
+            return hash_tmp->val;
         }
 
         hash_tmp = hash_tmp->next;
     }
 
-    return NGX_ERROR;
+    return 0;
 } 
 
 // 将str值放在hash表的最后位置
 static ngx_int_t 
-anti_hash_tbl_set(ngx_pool_t *pool, anti_hash_t ** anti_hash, ngx_str_t * str, ngx_int_t hash_size, ngx_int_t val, ngx_int_t expire_tm) {
+anti_hash_tbl_set(ngx_http_anti_conf_t *ancf,  ngx_str_t * str,  ngx_int_t val, ngx_int_t expire_tm) {
 
-    uint32_t hash_pos = ngx_murmur_hash2(str->data, str->len);
+    ngx_slab_pool_t      *shpool;
 
-    anti_hash_t * cache_info = ngx_pcalloc(pool, sizeof(anti_hash_t));
+    anti_hash_t          *cache_info;
+
+    anti_hash_t **anti_hash = ancf->anti_hash;
+    ngx_int_t hash_size     = ancf->anti_hash_size;
+    uint32_t hash_pos       = ngx_murmur_hash2(str->data, str->len);
+
+    // 将str值放在共享内存中
+    ngx_int_t size = sizeof(anti_hash_t) + str->len;
+    
+    // 共享内存
+    shpool = (ngx_slab_pool_t *) ancf->shm_zone->shm.addr;
+
+    // 加锁
+    ngx_shmtx_lock(&shpool->mutex);
+   
+    // 通过slab分配内存
+    cache_info = ngx_slab_alloc_locked(shpool, size);
+
+    // 分配失败，解锁返回错误
+    if (cache_info == NULL) {
+        ngx_shmtx_unlock(&shpool->mutex);
+        return NGX_ERROR;
+    }
+
     cache_info->next      = NULL;
     cache_info->val       = val;
     cache_info->expire_tm = expire_tm;
 
-    ngx_str_t * cache_key = ngx_pcalloc(pool, sizeof(ngx_str_t) + str->len);
-    cache_key->len  = str->len;
-    cache_key->data = (u_char * ) (cache_key + sizeof(ngx_str_t));
+    cache_key->key.len  = str->len;
+    cache_key->key.data = (u_char * ) (cache_info + sizeof(anti_hash_t));
 
-    ngx_memcpy(cache_key->data, str->data, str->len);
+    ngx_memcpy(cache_key->key.data, str->data, str->len);
 
     anti_hash_t * temp_hash = anti_hash[hash_pos % hash_size];
     
@@ -281,6 +310,7 @@ anti_hash_tbl_set(ngx_pool_t *pool, anti_hash_t ** anti_hash, ngx_str_t * str, n
         temp_hash->next = cache_info;
     }
     
+    ngx_shmtx_unlock(&shpool->mutex);
     return NGX_OK;
 } 
 
@@ -313,6 +343,12 @@ ngx_http_anti_create_loc_conf(ngx_conf_t *cf) {
     ngx_int_t hash_size = 100;
     ancf->anti_hash = anti_hash_tbl_create(cf, hash_size);
 
+    ngx_shm_zone_t   *shm_zone;
+    shm_zone = ngx_shared_memory_add(cf, &ngx_string("anti_hash"), 1024,
+                                     &ngx_http_anti_module);
+
+    ancf->shm_zone = shm_zone;
+
     return ancf;
 }
 
@@ -339,6 +375,8 @@ ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 static ngx_int_t
 ngx_http_anti_preconf_init(ngx_conf_t *cf) {
     // ngx_http_anti_conf_t * ancf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_anti_module);
+
+    
 
     return NGX_OK;
 }
