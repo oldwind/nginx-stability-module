@@ -221,14 +221,9 @@ anti_hash_tbl_create(ngx_conf_t *cf, ngx_int_t hash_size) {
     
     anti_hash_t ** anti_hash;
    
-    anti_hash = ngx_pcalloc(cf->pool, sizeof(anti_hash_t *) * hash_size);
+    anti_hash = (anti_hash_t **)ngx_pcalloc(cf->pool, sizeof(anti_hash_t *) * hash_size);
     if (anti_hash == NULL) {
         return NULL;
-    }
-
-    // 初始化hash数组中key值个数
-    for (int i = 0; i < hash_size; i ++) {
-        anti_hash[i] = NULL;
     }
 
     return anti_hash;
@@ -276,16 +271,18 @@ anti_hash_tbl_set(ngx_pool_t *pool, anti_hash_t ** anti_hash, ngx_str_t * str, n
     ngx_memcpy(cache_key->data, str->data, str->len);
 
     anti_hash_t * temp_hash = anti_hash[hash_pos % hash_size];
-    while (temp_hash->next != NULL) {
-        temp_hash = temp_hash->next;
+    
+    if (temp_hash == NULL) {
+        temp_hash = cache_info;
+    } else {
+        while (temp_hash->next != NULL) {
+            temp_hash = temp_hash->next;
+        }
+        temp_hash->next = cache_info;
     }
-
-    temp_hash->next = cache_info;
-
+    
     return NGX_OK;
-
 } 
-
 
 
 // static ngx_int_t 
@@ -312,6 +309,10 @@ ngx_http_anti_create_loc_conf(ngx_conf_t *cf) {
     ancf->anti_redis_address    = NGX_CONF_UNSET_UINT;
     ancf->anti_redis_connect_keeplive = NGX_CONF_UNSET_UINT;
     ancf->anti_hash             = NULL;
+
+    ngx_int_t hash_size = 100;
+    ancf->anti_hash = anti_hash_tbl_create(cf, hash_size);
+
     return ancf;
 }
 
@@ -337,11 +338,8 @@ ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 // 初始化hash表
 static ngx_int_t
 ngx_http_anti_preconf_init(ngx_conf_t *cf) {
-    ngx_http_anti_conf_t * ancf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_anti_module);
+    // ngx_http_anti_conf_t * ancf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_anti_module);
 
-    ngx_int_t hash_size = 100;
-    ancf->anti_hash = anti_hash_tbl_create(cf, hash_size);
-    
     return NGX_OK;
 }
 
