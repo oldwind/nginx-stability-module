@@ -200,19 +200,13 @@ ngx_http_anti_handler(ngx_http_request_t *r){
 
     num ++;
 
-    anti_hash_tbl_set(r->pool, hash_header, &test_str, hash_size, num, 12345678);
+    anti_hash_tbl_set(ancf, &test_str, num, 12345678);
 
     sprintf(str, "request_tm=%ld", num);
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
 
 
 
-
-
-    // 访问共享内存，判断是否超过限制
-    
-    
-    
     // 写到共享内存
 
     
@@ -294,10 +288,10 @@ anti_hash_tbl_set(ngx_http_anti_conf_t *ancf,  ngx_str_t * str,  ngx_int_t val, 
     cache_info->val       = val;
     cache_info->expire_tm = expire_tm;
 
-    cache_key->key.len  = str->len;
-    cache_key->key.data = (u_char * ) (cache_info + sizeof(anti_hash_t));
+    cache_info->key.len  = str->len;
+    cache_info->key.data = (u_char * ) (cache_info + sizeof(anti_hash_t));
 
-    ngx_memcpy(cache_key->key.data, str->data, str->len);
+    ngx_memcpy(cache_info->key.data, str->data, str->len);
 
     anti_hash_t * temp_hash = anti_hash[hash_pos % hash_size];
     
@@ -333,7 +327,7 @@ ngx_http_anti_create_loc_conf(ngx_conf_t *cf) {
 
     ancf->anti_cache_type       = NGX_CONF_UNSET_UINT;
     ancf->anti_cache_key        = NGX_CONF_UNSET_UINT;
-    ancf->anti_cache_key_hash_length  = NGX_CONF_UNSET_UINT;
+    ancf->anti_hash_size        = NGX_CONF_UNSET_UINT;
     ancf->anti_frozen_time      = NGX_CONF_UNSET_UINT;
     ancf->anti_use_redis        = NGX_CONF_UNSET_UINT; 
     ancf->anti_redis_address    = NGX_CONF_UNSET_UINT;
@@ -344,7 +338,8 @@ ngx_http_anti_create_loc_conf(ngx_conf_t *cf) {
     ancf->anti_hash = anti_hash_tbl_create(cf, hash_size);
 
     ngx_shm_zone_t   *shm_zone;
-    shm_zone = ngx_shared_memory_add(cf, &ngx_string("anti_hash"), 1024,
+    ngx_str_t name = ngx_string("anti_hash");
+    shm_zone = ngx_shared_memory_add(cf, &name, 1024,
                                      &ngx_http_anti_module);
 
     ancf->shm_zone = shm_zone;
@@ -360,7 +355,7 @@ ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 
     ngx_conf_merge_value(conf->anti_cache_type, prev->anti_cache_type, 1);
     ngx_conf_merge_value(conf->anti_cache_key, prev->anti_cache_key, 12);
-    ngx_conf_merge_value(conf->anti_cache_key_hash_length, prev->anti_cache_key_hash_length, 100);
+    ngx_conf_merge_value(conf->anti_hash_size, prev->anti_hash_size, 100);
     ngx_conf_merge_value(conf->anti_frozen_time, prev->anti_frozen_time, 300);
     ngx_conf_merge_value(conf->anti_use_redis, prev->anti_use_redis, 1);
     ngx_conf_merge_value(conf->anti_redis_address, prev->anti_redis_address, 1);
