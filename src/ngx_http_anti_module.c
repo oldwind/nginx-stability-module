@@ -339,7 +339,13 @@ ngx_http_anti_create_loc_conf(ngx_conf_t *cf) {
 
     ngx_shm_zone_t   *shm_zone;
     ngx_str_t name = ngx_string("anti_hash");
-    shm_zone = ngx_shared_memory_add(cf, &name, 1024,
+
+    ngx_str_t *p = ngx_pcalloc(cf->pool, sizeof(ngx_str_t) + sizeof(u_char*) * (name.len));
+    p->len       = name.len;
+    p->data      = (u_char*)p + sizeof(ngx_str_t);
+    ngx_memcpy(p->data, name.data, name.len);
+
+    shm_zone = ngx_shared_memory_add(cf, p, 1024,
                                      &ngx_http_anti_module);
 
     ancf->shm_zone = shm_zone;
