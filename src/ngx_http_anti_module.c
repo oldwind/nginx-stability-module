@@ -49,7 +49,10 @@ typedef struct {
 } ngx_http_anti_conf_t;
 
 
-static ngx_int_t ngx_http_anti_preconf_init(ngx_conf_t *cf);
+static char * ngx_anti_shm_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char * ngx_anti_acqu_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+static char * ngx_anti_frozen_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
+
 static ngx_int_t  ngx_http_anti_postconf_init(ngx_conf_t *cf);
 static void *  ngx_http_anti_create_loc_conf(ngx_conf_t *cf);
 static char *  ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
@@ -78,7 +81,7 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
     // 共享内存，存两部分数据，一部分是记录address的请求数据计数， 二部分记录过期的数据
     { ngx_string("anti_shm_size"),
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-        ngx_conf_set_size_slot,
+        ngx_anti_shm_size_init,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_anti_conf_t, anti_shm_size),
         NULL },
@@ -126,7 +129,7 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
     // 设定采集数据存储hash table的数组长度
     { ngx_string("anti_acqu_hash_size"),
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-        ngx_conf_set_size_slot,
+        ngx_anti_acqu_hash_size_init,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_anti_conf_t, anti_acqu_hash_size),
         NULL },
@@ -134,7 +137,7 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
     // 冻结数据hash table的数组长度
     { ngx_string("anti_frozen_hash_size"),
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-        ngx_conf_set_size_slot,
+        ngx_anti_frozen_hash_size_init,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_anti_conf_t, anti_frozen_hash_size),
         NULL },
@@ -143,7 +146,7 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
 };
 
 static ngx_http_module_t  ngx_http_anti_module_ctx = {
-    ngx_http_anti_preconf_init,          /* preconfiguration */
+    NULL,          /* preconfiguration */
     ngx_http_anti_postconf_init,         /* postconfiguration */
 
     NULL,                                    /* create main configuration */
@@ -244,32 +247,17 @@ ngx_http_anti_handler(ngx_http_request_t *r){
 }
 
 
-// 生成hash表，存储key->value, 开链法
-// @todo rehash
-// static anti_hash_t **
-// anti_hash_tbl_create(ngx_conf_t *cf, ngx_int_t hash_size) {
-    
-//     anti_hash_t ** anti_hash;
-   
-//     anti_hash = (anti_hash_t **)ngx_pcalloc(cf->pool, sizeof(anti_hash_t *) * hash_size);
-//     if (anti_hash == NULL) {
-//         return NULL;
-//     }
-
-//     return anti_hash;
-// }
-
 //
 // 从cache里面查到string是否存在, 查的过程中，发现如果链表数据过期，将数据删除
 // hash算法选择mermerhash算法
 // static ngx_int_t 
-// anti_hash_tbl_find(anti_hash_t ** hash_header, ngx_str_t * find_str, ngx_int_t hash_size) {
+// anti_hash_tbl_find(anti_hash_t ** header, ngx_str_t * find_str, ngx_int_t hash_size) {
     
 //     uint32_t hash_pos = ngx_murmur_hash2(find_str->data, find_str->len);
    
 //     anti_hash_t *hash_tmp;
     
-//     hash_tmp = hash_header[hash_pos % hash_size];
+//     hash_tmp = header[hash_pos % hash_size];
     
 //     while (hash_tmp != NULL ) {
 
@@ -374,29 +362,116 @@ ngx_http_anti_create_loc_conf(ngx_conf_t *cf) {
     ancf->anti_shm_zone       = NULL;
     ancf->anti_frozen_hash    = NULL;
 
-    // ngx_int_t hash_size = 100;
-    // ancf->anti_hash = anti_hash_tbl_create(cf, hash_size);
-
-    // ngx_shm_zone_t   *shm_zone;
-    // ngx_str_t name = ngx_string("anti_hash");
-
-    // ngx_str_t *p = ngx_pcalloc(cf->pool, sizeof(ngx_str_t) + sizeof(u_char*) * (name.len));
-    // p->len       = name.len;
-    // p->data      = (u_char*)p + sizeof(ngx_str_t);
-    // ngx_memcpy(p->data, name.data, name.len);
-
-    // shm_zone = ngx_shared_memory_add(cf, p, 1024,
-    //                                  &ngx_http_anti_module);
-
-    // ancf->shm_zone = shm_zone;
-    // shm_zone->init = anti_shm_zone_init;       
-
     return ancf;
 }
 
 
+static char * 
+ngx_anti_shm_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_http_anti_conf_t *ancf = conf;
+    ngx_str_t  *value;
+    ngx_int_t  *np;
 
- 
+    np = (ngx_int_t *) (ancf + cmd->offset);
+
+    if (*np != NGX_CONF_UNSET) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+    *np = ngx_atoi(value[1].data, value[1].len);
+    if (*np == NGX_ERROR) {
+        return "invalid number";
+    }
+
+    // hashtable的数组长度不能超过1M， 分页大小是4096, 优化的时候可以把pagesize的大小调大
+    if (*np <= 0 || *np > 1048576) {
+        // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "get client addr error");
+        return NGX_CONF_ERROR;
+    }   
+
+    // 分配内存，挂载ancf中
+    ancf->anti_acqu_hash = ngx_pcalloc(cf->pool, *np);
+    if (ancf->anti_acqu_hash == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+}
+
+
+static char * 
+ngx_anti_acqu_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_http_anti_conf_t *ancf = conf;
+    ngx_str_t  *value;
+    ngx_int_t  *np;
+
+    np = (ngx_int_t *) (ancf + cmd->offset);
+
+    if (*np != NGX_CONF_UNSET) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+    *np = ngx_atoi(value[1].data, value[1].len);
+    if (*np == NGX_ERROR) {
+        return "invalid number";
+    }
+
+    if ( *np <= 0 || *np > 1048576) {
+        return NGX_CONF_ERROR;
+    }
+
+    ancf->anti_frozen_hash = ngx_pcalloc(cf->pool, *np);
+    if (ancf->anti_frozen_hash == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    return NGX_CONF_OK;
+
+}
+
+
+static char * 
+ngx_anti_frozen_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+    ngx_http_anti_conf_t *ancf = conf;
+    ngx_str_t  *value;
+    ngx_int_t  *np;
+
+    np = (ngx_int_t *) (ancf + cmd->offset);
+
+    if (*np != NGX_CONF_UNSET) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+    *np = ngx_atoi(value[1].data, value[1].len);
+    if (*np == NGX_ERROR) {
+        return "invalid number";
+    }
+
+     // 开启共享内存分配内存, 共享内存大小不超过64M
+    if (ancf->anti_shm_size <= 0 || ancf->anti_shm_size > 67108864) {
+        return NGX_CONF_ERROR;
+    }
+
+    ngx_shm_zone_t   *shm_zone;
+    ngx_str_t name = ngx_string("anti_hash");
+
+    ngx_str_t *p = ngx_pcalloc(cf->pool, sizeof(ngx_str_t) + sizeof(u_char*) * (name.len));
+    p->len       = name.len;
+    p->data      = (u_char*)p + sizeof(ngx_str_t);
+    ngx_memcpy(p->data, name.data, name.len);
+
+    shm_zone = ngx_shared_memory_add(cf, p, ancf->anti_shm_size,
+                                     &ngx_http_anti_module);
+
+    ancf->anti_shm_zone = shm_zone;
+
+    return NGX_CONF_OK;
+}
+
+
 static char * 
 ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     ngx_http_anti_conf_t *prev = parent;
@@ -414,54 +489,6 @@ ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 
     return NGX_CONF_OK;
 }
-
-
-static ngx_int_t
-ngx_http_anti_preconf_init(ngx_conf_t *cf) {
-
-    ngx_http_anti_conf_t *ancf;
-    ancf = ngx_pcalloc(cf->pool, sizeof(ngx_http_anti_module));
-    if (ancf == NULL) {
-        return NGX_ERROR;
-    }
-
-    if (ancf->anti_open == 0) {
-        return NGX_OK;
-    }
-
-    // hashtable的数组长度不能超过1M， 分页大小是4096, 优化的时候可以把pagesize的大小调大
-    if (ancf->anti_acqu_hash_size <= 0 || ancf->anti_acqu_hash_size > 1048576) {
-        // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "get client addr error");
-        return NGX_ERROR;
-    }   
-
-    // 分配内存，挂载ancf中
-    ancf->anti_acqu_hash = ngx_pcalloc(cf->pool, ancf->anti_acqu_hash_size);
-    if (ancf->anti_acqu_hash == NULL) {
-        return NGX_ERROR;
-    }
-
-    if (ancf->anti_frozen_hash_size <= 0 || ancf->anti_frozen_hash_size > 1048576) {
-        return NGX_ERROR;
-    }
-
-    ancf->anti_frozen_hash = ngx_pcalloc(cf->pool, ancf->anti_frozen_hash_size);
-    if (ancf->anti_frozen_hash == NULL) {
-        return NGX_ERROR;
-    }
-
-    // 开启共享内存分配内存
-    
-
-
-
-
-
-    
-
-    return NGX_OK;
-}
-
 
 
 static ngx_int_t 
