@@ -24,8 +24,10 @@ typedef struct anti_frozen_hash_t {
     struct anti_acqu_hash_t * next;
 } anti_frozen_hash_t;
 
+// 基础conf信息
 typedef struct {
     // command解析出的参数
+    ngx_int_t       anti_open;
     ngx_int_t       anti_shm_size;
     ngx_int_t       anti_acqu_cycle;
     ngx_int_t       anti_acqu_type;
@@ -47,16 +49,6 @@ typedef struct {
 } ngx_http_anti_conf_t;
 
 
-static char *
-ngx_anti_shm_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-
-static char *
-ngx_anti_acqu_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-
-static char *
-ngx_anti_frozen_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf);
-
-
 static ngx_int_t ngx_http_anti_preconf_init(ngx_conf_t *cf);
 static ngx_int_t  ngx_http_anti_postconf_init(ngx_conf_t *cf);
 static void *  ngx_http_anti_create_loc_conf(ngx_conf_t *cf);
@@ -74,9 +66,19 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
 
     // 指令解析的时候，增加共享内存的大小分配
     // 共享内存，存两部分数据，一部分是记录address的请求数据计数， 二部分记录过期的数据
+    { ngx_string("anti_open"),
+        NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
+        ngx_conf_set_size_slot,
+        NGX_HTTP_LOC_CONF_OFFSET,
+        offsetof(ngx_http_anti_conf_t, anti_open),
+        NULL },
+
+
+    // 指令解析的时候，增加共享内存的大小分配
+    // 共享内存，存两部分数据，一部分是记录address的请求数据计数， 二部分记录过期的数据
     { ngx_string("anti_shm_size"),
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-        ngx_anti_shm_size_init,
+        ngx_conf_set_size_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_anti_conf_t, anti_shm_size),
         NULL },
@@ -124,7 +126,7 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
     // 设定采集数据存储hash table的数组长度
     { ngx_string("anti_acqu_hash_size"),
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-        ngx_anti_acqu_hash_size_init,
+        ngx_conf_set_size_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_anti_conf_t, anti_acqu_hash_size),
         NULL },
@@ -132,7 +134,7 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
     // 冻结数据hash table的数组长度
     { ngx_string("anti_frozen_hash_size"),
         NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
-        ngx_anti_frozen_hash_size_init,
+        ngx_conf_set_size_slot,
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_anti_conf_t, anti_frozen_hash_size),
         NULL },
@@ -141,8 +143,8 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
 };
 
 static ngx_http_module_t  ngx_http_anti_module_ctx = {
-    ngx_http_anti_preconf_init,      /* preconfiguration */
-    ngx_http_anti_postconf_init,                  /* postconfiguration */
+    ngx_http_anti_preconf_init,          /* preconfiguration */
+    ngx_http_anti_postconf_init,         /* postconfiguration */
 
     NULL,                                    /* create main configuration */
     NULL,                                    /* init main configuration */
@@ -357,6 +359,7 @@ ngx_http_anti_create_loc_conf(ngx_conf_t *cf) {
         return NULL;
     }
 
+    ancf->anti_open           = NGX_CONF_UNSET_UINT;
     ancf->anti_shm_size       = NGX_CONF_UNSET_UINT;
     ancf->anti_acqu_cycle     = NGX_CONF_UNSET_UINT;
     ancf->anti_acqu_type      = NGX_CONF_UNSET_UINT;
@@ -399,50 +402,64 @@ ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     ngx_http_anti_conf_t *prev = parent;
     ngx_http_anti_conf_t *conf = child;
 
+    ngx_conf_merge_value(conf->anti_open, prev->anti_open, 0);
     ngx_conf_merge_value(conf->anti_shm_size, prev->anti_shm_size, 8096);
     ngx_conf_merge_value(conf->anti_acqu_cycle, prev->anti_acqu_cycle, 1);
     ngx_conf_merge_value(conf->anti_acqu_type, prev->anti_acqu_type, 1);
     ngx_conf_merge_value(conf->anti_threshold, prev->anti_threshold, 100);
     ngx_conf_merge_value(conf->anti_frozen_innernet, prev->anti_frozen_innernet, 1);
     ngx_conf_merge_value(conf->anti_frozen_time, prev->anti_frozen_time, 300);
-    ngx_conf_merge_value(conf->anti_acqu_hash_size, prev->anti_acqu_hash_size, 100);
-    ngx_conf_merge_value(conf->anti_frozen_hash_size, prev->anti_frozen_hash_size, 100);
+    ngx_conf_merge_value(conf->anti_acqu_hash_size, prev->anti_acqu_hash_size, 128);
+    ngx_conf_merge_value(conf->anti_frozen_hash_size, prev->anti_frozen_hash_size, 128);
 
     return NGX_CONF_OK;
 }
 
 
-// 初始化缓存文件的地址，判断文件夹是否存在，不存在，则新建
-// 初始化hash表
 static ngx_int_t
 ngx_http_anti_preconf_init(ngx_conf_t *cf) {
-    // ngx_http_anti_conf_t * ancf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_anti_module);
+
+    ngx_http_anti_conf_t *ancf;
+    ancf = ngx_pcalloc(cf->pool, sizeof(ngx_http_anti_module));
+    if (ancf == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (ancf->anti_open == 0) {
+        return NGX_OK;
+    }
+
+    // hashtable的数组长度不能超过1M， 分页大小是4096, 优化的时候可以把pagesize的大小调大
+    if (ancf->anti_acqu_hash_size <= 0 || ancf->anti_acqu_hash_size > 1048576) {
+        // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "get client addr error");
+        return NGX_ERROR;
+    }   
+
+    // 分配内存，挂载ancf中
+    ancf->anti_acqu_hash = ngx_pcalloc(cf->pool, ancf->anti_acqu_hash_size);
+    if (ancf->anti_acqu_hash == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (ancf->anti_frozen_hash_size <= 0 || ancf->anti_frozen_hash_size > 1048576) {
+        return NGX_ERROR;
+    }
+
+    ancf->anti_frozen_hash = ngx_pcalloc(cf->pool, ancf->anti_frozen_hash_size);
+    if (ancf->anti_frozen_hash == NULL) {
+        return NGX_ERROR;
+    }
+
+    // 开启共享内存分配内存
+    
+
+
+
+
 
     
 
     return NGX_OK;
-}
-
-
-
-
-static char *
-ngx_anti_shm_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-    return "";
-}
-
-
-static char *
-ngx_anti_acqu_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-    // 分配内存
-    return "";
-
-}
-
-
-static char *
-ngx_anti_frozen_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
-    return "";
 }
 
 
