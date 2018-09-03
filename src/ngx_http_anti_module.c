@@ -348,14 +348,14 @@ ngx_http_anti_create_loc_conf(ngx_conf_t *cf) {
     }
 
     ancf->anti_open           = NGX_CONF_UNSET_UINT;
-    ancf->anti_shm_size       = NGX_CONF_UNSET_UINT;
+    ancf->anti_shm_size       = NGX_CONF_UNSET;
     ancf->anti_acqu_cycle     = NGX_CONF_UNSET_UINT;
     ancf->anti_acqu_type      = NGX_CONF_UNSET_UINT;
     ancf->anti_threshold      = NGX_CONF_UNSET_UINT;
     ancf->anti_frozen_innernet  = NGX_CONF_UNSET_UINT; 
     ancf->anti_frozen_time      = NGX_CONF_UNSET_UINT;
-    ancf->anti_acqu_hash_size   = NGX_CONF_UNSET_UINT;
-    ancf->anti_frozen_hash_size = NGX_CONF_UNSET_UINT;
+    ancf->anti_acqu_hash_size   = NGX_CONF_UNSET;
+    ancf->anti_frozen_hash_size = NGX_CONF_UNSET;
     
     ancf->begin_tm            = NGX_CONF_UNSET_UINT;
     ancf->anti_acqu_hash      = NULL;
@@ -367,32 +367,29 @@ ngx_http_anti_create_loc_conf(ngx_conf_t *cf) {
 
 
 static char * 
-ngx_anti_shm_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+ngx_anti_frozen_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_anti_conf_t *ancf = conf;
     ngx_str_t  *value;
-    ngx_int_t  *np;
 
-    np = (ngx_int_t *) (ancf + cmd->offset);
-
-    if (*np != NGX_CONF_UNSET) {
+    if (ancf->anti_frozen_hash_size != NGX_CONF_UNSET) {
         return "is duplicate";
     }
 
     value = cf->args->elts;
-    *np = ngx_atoi(value[1].data, value[1].len);
-    if (*np == NGX_ERROR) {
+    ancf->anti_frozen_hash_size = ngx_atoi(value[1].data, value[1].len);
+    if (ancf->anti_frozen_hash_size == NGX_ERROR) {
         return "invalid number";
     }
 
     // hashtable的数组长度不能超过1M， 分页大小是4096, 优化的时候可以把pagesize的大小调大
-    if (*np <= 0 || *np > 1048576) {
+    if (ancf->anti_frozen_hash_size <= 0 || ancf->anti_frozen_hash_size > 1048576) {
         // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "get client addr error");
         return NGX_CONF_ERROR;
     }   
 
     // 分配内存，挂载ancf中
-    ancf->anti_acqu_hash = ngx_pcalloc(cf->pool, *np);
-    if (ancf->anti_acqu_hash == NULL) {
+    ancf->anti_frozen_hash = ngx_pcalloc(cf->pool, ancf->anti_frozen_hash_size);
+    if (ancf->anti_frozen_hash == NULL) {
         return NGX_CONF_ERROR;
     }
 
@@ -404,25 +401,22 @@ static char *
 ngx_anti_acqu_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_anti_conf_t *ancf = conf;
     ngx_str_t  *value;
-    ngx_int_t  *np;
 
-    np = (ngx_int_t *) (ancf + cmd->offset);
-
-    if (*np != NGX_CONF_UNSET) {
+    if (ancf->anti_acqu_hash_size != NGX_CONF_UNSET) {
         return "is duplicate";
     }
 
     value = cf->args->elts;
-    *np = ngx_atoi(value[1].data, value[1].len);
-    if (*np == NGX_ERROR) {
+    ancf->anti_acqu_hash_size = ngx_atoi(value[1].data, value[1].len);
+    if (ancf->anti_acqu_hash_size == NGX_ERROR) {
         return "invalid number";
     }
 
-    if ( *np <= 0 || *np > 1048576) {
+    if ( ancf->anti_acqu_hash_size <= 0 || ancf->anti_acqu_hash_size > 1048576) {
         return NGX_CONF_ERROR;
     }
-
-    ancf->anti_frozen_hash = ngx_pcalloc(cf->pool, *np);
+    
+    ancf->anti_acqu_hash = ngx_pcalloc(cf->pool, ancf->anti_acqu_hash_size );
     if (ancf->anti_frozen_hash == NULL) {
         return NGX_CONF_ERROR;
     }
@@ -433,20 +427,18 @@ ngx_anti_acqu_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
 
 
 static char * 
-ngx_anti_frozen_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
+ngx_anti_shm_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     ngx_http_anti_conf_t *ancf = conf;
     ngx_str_t  *value;
-    ngx_int_t  *np;
+    // ngx_int_t  *np;
 
-    np = (ngx_int_t *) (ancf + cmd->offset);
-
-    if (*np != NGX_CONF_UNSET) {
+    if (ancf->anti_shm_size != NGX_CONF_UNSET) {
         return "is duplicate";
     }
 
     value = cf->args->elts;
-    *np = ngx_atoi(value[1].data, value[1].len);
-    if (*np == NGX_ERROR) {
+    ancf->anti_shm_size = ngx_atoi(value[1].data, value[1].len);
+    if (ancf->anti_shm_size == NGX_ERROR) {
         return "invalid number";
     }
 
