@@ -23,6 +23,27 @@ typedef struct anti_frozen_hash_t {
     anti_acqu_hash_t acqu_hash;
 } anti_frozen_hash_t;
 
+
+// 实现一个hashtable
+typedef struct anti_hash_t {
+    ngx_str_t hash_key;
+    void *    hash_val;
+    struct anti_hash_t * next;
+} anti_hash_t;
+
+// 冻结数据结构
+typedef struct {
+    ngx_int_t count;
+    ngx_int_t expire_tm;
+}anti_hash_frozen_t;
+
+// 数据采集结构
+typedef struct  {
+    ngx_int_t count;
+}anti_hash_acqu_t;
+
+
+
 // 基础conf信息
 typedef struct {
     // command解析出的参数
@@ -40,12 +61,20 @@ typedef struct {
     
     ngx_int_t  begin_tm;  // 采集周期开始时间
 
-    anti_acqu_hash_t     **anti_acqu_hash;
+    anti_hash_t     **anti_acqu_hash;
     ngx_shm_zone_t  *anti_shm_zone;  // 共享内存，初始化为NULL
  
-    anti_frozen_hash_t **anti_frozen_hash;  // 冻结地址信息记录
+    anti_hash_t     **anti_frozen_hash;  // 冻结地址信息记录
 
 } ngx_http_anti_conf_t;
+
+
+static ngx_int_t
+anti_hash_set(ngx_slab_pool_t * shpool,  anti_hash_t **header, ngx_int_t hash_size, 
+    ngx_str_t *key, void *val, ngx_int_t len);
+
+static void * 
+anti_hash_find(anti_hash_t **header, ngx_str_t * find_str, ngx_int_t hash_size);
 
 
 static ngx_int_t 
@@ -62,12 +91,6 @@ static ngx_int_t  ngx_http_anti_postconf_init(ngx_conf_t *cf);
 static void *  ngx_http_anti_create_loc_conf(ngx_conf_t *cf);
 static char *  ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child);
 static ngx_int_t ngx_http_anti_handler(ngx_http_request_t *r);
-
-static anti_acqu_hash_t * 
-    anti_hash_tbl_find(anti_acqu_hash_t  ** anti_hash, ngx_str_t * str, ngx_int_t hash_size);
-
-static ngx_int_t 
-    anti_hash_tbl_set(ngx_http_anti_conf_t *ancf,  ngx_str_t * str,  ngx_int_t val); 
 
 
 static ngx_command_t  ngx_http_anti_module_commands[] = {
@@ -245,8 +268,8 @@ ngx_http_anti_handler(ngx_http_request_t *r){
 
 
     // 5.1 判断采集开始周期，超过周期，清空内存
-    anti_acqu_hash_t  *tmp1, *tmp2;
-    if (ancf->anti_acqu_cycle - ancf->begin_tm > now->sec) {
+    anti_hash_t  *tmp1, *tmp2;
+    if (ancf->begin_tm > 0 && now->sec - ancf->begin_tm > ancf->anti_acqu_cycle) {
         for (int i = 0; i < ancf->anti_acqu_hash_size; i ++) {
             if (ancf->anti_acqu_hash[i] == NULL) {
                 continue;
@@ -264,28 +287,36 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     // 6. 查找是否在收集的hashtable中  // 测试hashtable find
     ngx_str_t test_str = ngx_string("/sisisisis?sdajfda");
 
-    anti_acqu_hash_t *hash_temp = anti_hash_tbl_find(ancf->anti_acqu_hash, &test_str, ancf->anti_acqu_hash_size);
+    anti_hash_t * hash_temp = anti_hash_find(ancf->anti_acqu_hash, &test_str, 
+            ancf->anti_acqu_hash_size);
+
+    anti_hash_acqu_t *hash_acqu = NULL;
+    // anti_acqu_hash_t *hash_temp = anti_hash_tbl_find(ancf->anti_acqu_hash, &test_str, ancf->anti_acqu_hash_size);
    
-    ngx_int_t num = hash_temp->acqu_val;
+    ngx_int_t num;
     if (hash_temp != NULL) {
         // anti_hash_tbl_set(ancf, &test_str, hash_temp->acqu_val + 1);
-        hash_temp->acqu_val = hash_temp->acqu_val + 1; // 加锁保证原子性
-        num = hash_temp->acqu_val + 1;
+        hash_acqu        = hash_temp->hash_val;
+        hash_acqu->count = hash_acqu->count + 1; // 加锁保证原子性
+        num = hash_acqu->count;
+
+        // 6.1.1 判断是否超过阈值, 写冻结的hashtable中
+        if (hash_acqu->count > ancf->anti_threshold) {
+            return NGX_ERROR;
+        }
+
     } else {
-        anti_hash_tbl_set(ancf, &test_str, 1);
+        hash_acqu->count = 1;
+        anti_hash_set((ngx_slab_pool_t *)(ancf->anti_shm_zone->shm.addr), ancf->anti_acqu_hash,
+                 ancf->anti_acqu_hash_size, &test_str, hash_acqu, sizeof(anti_hash_acqu_t));
         num = 1;
     }
 
 
-    char str[100];
-    sprintf(str, "request_tm=%ld", num);
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
+    // char str[100];
+    // sprintf(str, "request_tm=%ld", num);
+    // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
 
-
-    // 6.1.1 判断是否超过阈值, 写冻结的hashtable中
-    if ( hash_temp->acqu_val > ancf->anti_threshold) {
-
-    }
 
 
 
@@ -297,78 +328,73 @@ ngx_http_anti_handler(ngx_http_request_t *r){
 }
 
 
-// 从cache里面查到string是否存在, 查的过程中，发现如果链表数据过期，将数据删除
-// 支持 anti_acqu_hash_t 类型和 包含该类型的hashtable的链表遍历查找，例如 anti_frozen_hash_t
-// hash算法选择mermerhash算法
-static anti_acqu_hash_t * 
-anti_hash_tbl_find(anti_acqu_hash_t ** header, ngx_str_t * find_str, ngx_int_t hash_size) {
+
+static void * 
+anti_hash_find(anti_hash_t **header, ngx_str_t * find_str, ngx_int_t hash_size) {
     if (header == NULL) {
         return NULL;
     }
 
     uint32_t hash_base_size = ngx_murmur_hash2(find_str->data, find_str->len);
-   
-    anti_acqu_hash_t *hash_temp;
+
+    anti_hash_t *hash_temp;
     
     hash_temp = header[hash_base_size % hash_size];
-    
+
     while (hash_temp != NULL ) {
 
-        if (0 == ngx_strcmp(hash_temp->acqu_key.data, find_str->data)) {
+        if (0 == ngx_strcmp(hash_temp->hash_key.data, find_str->data)) {
             return hash_temp;
         }
 
         hash_temp = hash_temp->next;
     }
-
+    
     return NULL;
-} 
+}
 
-// 将str值放在hash表的最后位置
-static ngx_int_t 
-anti_hash_tbl_set(ngx_http_anti_conf_t *ancf,  ngx_str_t * str,  ngx_int_t val) {
 
-    ngx_slab_pool_t  *shpool;
-    anti_acqu_hash_t *acqu_save;
-    anti_acqu_hash_t **anti_acqu_hash = ancf->anti_acqu_hash;
-    anti_acqu_hash_t *hash_temp;
+
+static ngx_int_t
+anti_hash_set(ngx_slab_pool_t * shpool,  anti_hash_t **header, ngx_int_t hash_size, 
+    ngx_str_t *key, void *val, ngx_int_t len) 
+{
+    if (header == NULL || shpool == NULL) {
+        return NGX_ERROR;;
+    }
+
+    anti_hash_t *anti_hash;
+    anti_hash_t *anti_hash_alloc;
     
     // ngx_int_t anti_acqu_hash_size  = ancf->anti_acqu_hash_size;
-    uint32_t hash_base_size = ngx_murmur_hash2(str->data, str->len);
+    uint32_t hash_base_size = ngx_murmur_hash2(key->data, key->len);
+    anti_hash = header[hash_base_size % hash_size];
 
-    // 未查到str信息，那么新建一个str信息，先检查在共享内存中申请的大小
-    // 申请完毕后，将str值放到响应结构体中
-    ngx_int_t size = sizeof(anti_acqu_hash_t) + str->len;
-    
-    // 共享内存池
-    shpool = (ngx_slab_pool_t *) ancf->anti_shm_zone->shm.addr;
+    while (anti_hash != NULL) {
+        anti_hash = anti_hash->next;
+    }
 
+    // 存储大小
+    ngx_int_t size = sizeof(anti_hash_t) + key->len + len;
 
-    acqu_save = ngx_slab_alloc(shpool, size);
-    if (acqu_save == NULL) {
+    anti_hash_alloc = ngx_slab_alloc(shpool, size);
+    if (anti_hash_alloc == NULL) {
         return NGX_ERROR;
     }
 
-    acqu_save->next          = NULL;
-    acqu_save->acqu_val      = val;
-    acqu_save->acqu_key.len  = str->len;
-    acqu_save->acqu_key.data = (u_char * ) (acqu_save + sizeof(anti_acqu_hash_t));
+    // 处理key
+    anti_hash_alloc->next          = NULL;
+    anti_hash_alloc->hash_key.len  = key->len;
+    anti_hash_alloc->hash_key.data = (u_char *)anti_hash_alloc + sizeof(anti_hash_t);
+    ngx_memcpy(anti_hash_alloc->hash_key.data, key->data, key->len);
 
-    ngx_memcpy(acqu_save->acqu_key.data, str->data, str->len);
+    // 处理value
+    ngx_memcpy(anti_hash_alloc->hash_key.data + key->len, val, len);
+    
+    anti_hash->next = anti_hash_alloc;
 
-    hash_temp = anti_acqu_hash[hash_base_size % ancf->anti_acqu_hash_size];
-    
-    if (hash_temp == NULL) {
-        anti_acqu_hash[hash_base_size % ancf->anti_acqu_hash_size] = acqu_save;
-    } else {
-        while (hash_temp->next != NULL) {
-            hash_temp = hash_temp->next;
-        }
-        hash_temp->next = acqu_save;
-    }
-    
     return NGX_OK;
-} 
+}
 
 
 static ngx_int_t 
@@ -526,7 +552,7 @@ ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     ngx_conf_merge_value(conf->anti_shm_size, prev->anti_shm_size, 8096);
     ngx_conf_merge_value(conf->anti_acqu_cycle, prev->anti_acqu_cycle, 1);
     ngx_conf_merge_value(conf->anti_acqu_type, prev->anti_acqu_type, 1);
-    ngx_conf_merge_value(conf->anti_threshold, prev->anti_threshold, 100);
+    ngx_conf_merge_value(conf->anti_threshold, prev->anti_threshold, 10);
     ngx_conf_merge_value(conf->anti_frozen_innernet, prev->anti_frozen_innernet, 1);
     ngx_conf_merge_value(conf->anti_frozen_time, prev->anti_frozen_time, 300);
     ngx_conf_merge_value(conf->anti_acqu_hash_size, prev->anti_acqu_hash_size, 128);
