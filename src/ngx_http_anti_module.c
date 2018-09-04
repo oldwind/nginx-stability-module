@@ -47,6 +47,10 @@ typedef struct {
 
 } ngx_http_anti_conf_t;
 
+
+static ngx_int_t 
+anti_hash_tbl_del(ngx_http_anti_conf_t *ancf, void * dp); 
+
 static ngx_int_t 
 anti_shm_init(ngx_shm_zone_t *zone, void *data);
 
@@ -76,7 +80,6 @@ static ngx_command_t  ngx_http_anti_module_commands[] = {
         NGX_HTTP_LOC_CONF_OFFSET,
         offsetof(ngx_http_anti_conf_t, anti_open),
         NULL },
-
 
     // 指令解析的时候，增加共享内存的大小分配
     // 共享内存，存两部分数据，一部分是记录address的请求数据计数， 二部分记录过期的数据
@@ -177,6 +180,20 @@ ngx_module_t  ngx_http_anti_module = {
 };
 
 
+// 1、判断配置的监控类别 (IP, IP + URL， IP +args参数等)
+// 2、根据类别组装查询的KEY
+// 3、从冻结的hashtable里面查询KEY是否存在，@todo 同时清理
+//    3.1 如果存在，并且没有过期，返回请求forbidden
+//    3.2 如果不存在，或者存在的但是过期， 继续4
+// 4、加共享锁
+// 5、判断数据采集的hashtable是否到周期
+//    5.1 到周期，循环清理内存
+//    5.2 未到周期，继续6
+// 6、判断KEY在数据采集hashtable中是否存在
+//    6.1 存在， +1, 判断是否超过阈值
+//        6.1.1 超过阈值，查询冻结表是否存在，存在则更新解冻时间，返回forbidden
+//    6.2 不存在， 增加KEY，初始化1
+// 7、关闭共享锁 (4-7之间异常情况关闭贡献锁)
 static ngx_int_t
 ngx_http_anti_handler(ngx_http_request_t *r){
     
@@ -212,7 +229,7 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     // 整理成key
     ngx_str_t key = ngx_string("sss");
     ngx_int_t len = key.len + ngx_strlen(uri);
-
+  
     
     // sprintf(str, "ip=%d", (int)s_addr);   
     // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
@@ -221,25 +238,54 @@ ngx_http_anti_handler(ngx_http_request_t *r){
         return NGX_OK;
     }
 
-    // 测试hashtable set
+    ngx_time_t *now;
+    ngx_timezone_update();
+    now = ngx_timeofday();
+    ngx_time_update();
+
+
+    // 5.1 判断采集开始周期，超过周期，清空内存
+    anti_acqu_hash_t  *tmp1, *tmp2;
+    if (ancf->anti_acqu_cycle - ancf->begin_tm > now->sec) {
+        for (int i = 0; i < ancf->anti_acqu_hash_size; i ++) {
+            if (ancf->anti_acqu_hash[i] == NULL) {
+                continue;
+            }
+            ancf->anti_acqu_hash[i] = NULL;
+            tmp1 = ancf->anti_acqu_hash[i]->next;
+            while (tmp1 != NULL) {
+                tmp2 = tmp1;
+                tmp1 = tmp1->next;
+                anti_hash_tbl_del(ancf, tmp2);
+            }
+        }
+    }
+
+    // 6. 查找是否在收集的hashtable中  // 测试hashtable find
     ngx_str_t test_str = ngx_string("/sisisisis?sdajfda");
-    
-    // 测试hashtable find
-    anti_acqu_hash_t *hash_temp = anti_hash_tbl_find(ancf->anti_acqu_hash, &test_str, 
-        ancf->anti_acqu_hash_size);
+
+    anti_acqu_hash_t *hash_temp = anti_hash_tbl_find(ancf->anti_acqu_hash, &test_str, ancf->anti_acqu_hash_size);
    
-    char str[100];
     ngx_int_t num = hash_temp->acqu_val;
     if (hash_temp != NULL) {
-        anti_hash_tbl_set(ancf, &test_str, hash_temp->acqu_val + 1);
+        // anti_hash_tbl_set(ancf, &test_str, hash_temp->acqu_val + 1);
+        hash_temp->acqu_val = hash_temp->acqu_val + 1; // 加锁保证原子性
         num = hash_temp->acqu_val + 1;
     } else {
         anti_hash_tbl_set(ancf, &test_str, 1);
         num = 1;
     }
 
+
+    char str[100];
     sprintf(str, "request_tm=%ld", num);
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
+
+
+    // 6.1.1 判断是否超过阈值, 写冻结的hashtable中
+    if ( hash_temp->acqu_val > ancf->anti_threshold) {
+
+    }
 
 
 
@@ -256,7 +302,10 @@ ngx_http_anti_handler(ngx_http_request_t *r){
 // hash算法选择mermerhash算法
 static anti_acqu_hash_t * 
 anti_hash_tbl_find(anti_acqu_hash_t ** header, ngx_str_t * find_str, ngx_int_t hash_size) {
-    
+    if (header == NULL) {
+        return NULL;
+    }
+
     uint32_t hash_base_size = ngx_murmur_hash2(find_str->data, find_str->len);
    
     anti_acqu_hash_t *hash_temp;
@@ -322,17 +371,18 @@ anti_hash_tbl_set(ngx_http_anti_conf_t *ancf,  ngx_str_t * str,  ngx_int_t val) 
 } 
 
 
-// static ngx_int_t 
-//     anti_hash_tbl_del(cache_key_hash_t * ckh, ngx_str_t * str, ngx_int_t hash_size) 
-// {
-//     return NGX_OK;
-// }
+static ngx_int_t 
+anti_hash_tbl_del(ngx_http_anti_conf_t *ancf, void * dp) 
+{
+    ngx_slab_pool_t  *shpool;
 
-// static ngx_int_t
-// anti_shm_zone_init (ngx_shm_zone_t *shm_zone, void *data) {
-//     return NGX_OK;
-// }
+    // 共享内存池
+    shpool = (ngx_slab_pool_t *) ancf->anti_shm_zone->shm.addr;
 
+    ngx_slab_free(shpool, dp);
+
+    return NGX_OK;
+}
 
 
 static void * 
