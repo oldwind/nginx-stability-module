@@ -9,20 +9,6 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
-// 计数器的hash结构，开链方式，val统一是int类型
-typedef struct anti_acqu_hash_t{    
-    ngx_str_t acqu_key;
-    ngx_int_t acqu_val;
-    struct anti_acqu_hash_t * next;
-} anti_acqu_hash_t;
-
-
-// 冻结数据记录信息
-typedef struct anti_frozen_hash_t {
-    ngx_int_t expire_tm;
-    anti_acqu_hash_t acqu_hash;
-} anti_frozen_hash_t;
-
 
 // 实现一个hashtable
 typedef struct anti_hash_t {
@@ -41,7 +27,6 @@ typedef struct {
 typedef struct  {
     ngx_int_t count;
 }anti_hash_acqu_t;
-
 
 
 // 基础conf信息
@@ -313,9 +298,9 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     }
 
 
-    // char str[100];
-    // sprintf(str, "request_tm=%ld", num);
-    // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
+    char str[100];
+    sprintf(str, "request_tm=%ld", num);
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
 
 
 
@@ -349,7 +334,7 @@ anti_hash_find(anti_hash_t **header, ngx_str_t * find_str, ngx_int_t hash_size) 
 
         hash_temp = hash_temp->next;
     }
-    
+
     return NULL;
 }
 
@@ -460,7 +445,7 @@ ngx_anti_frozen_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
     }   
 
     // 分配内存，挂载ancf中
-    ancf->anti_frozen_hash = ngx_pcalloc(cf->pool, sizeof(anti_frozen_hash_t *) * ancf->anti_frozen_hash_size);
+    ancf->anti_frozen_hash = ngx_pcalloc(cf->pool, sizeof(anti_hash_t *) * ancf->anti_frozen_hash_size);
     if (ancf->anti_frozen_hash == NULL) {
         return NGX_CONF_ERROR;
     }
@@ -488,7 +473,7 @@ ngx_anti_acqu_hash_size_init(ngx_conf_t *cf, ngx_command_t *cmd, void *conf) {
         return NGX_CONF_ERROR;
     }
     
-    ancf->anti_acqu_hash = ngx_pcalloc(cf->pool, sizeof(anti_acqu_hash_t *) * ancf->anti_acqu_hash_size );
+    ancf->anti_acqu_hash = ngx_pcalloc(cf->pool, sizeof(anti_hash_t *) * ancf->anti_acqu_hash_size );
     if (ancf->anti_acqu_hash == NULL) {
         return NGX_CONF_ERROR;
     }
