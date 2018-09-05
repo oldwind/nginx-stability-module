@@ -205,16 +205,21 @@ ngx_module_t  ngx_http_anti_module = {
 static ngx_int_t
 ngx_http_anti_handler(ngx_http_request_t *r){
     
-    // 获取配置信息
+    // 1. 系统操作， 获取内存中的当前时间 
+    ngx_time_t *now;
+    ngx_timezone_update();
+    now = ngx_timeofday();
+    ngx_time_update();
+    
     ngx_http_anti_conf_t * ancf;
-    ancf = ngx_http_get_module_loc_conf(r, ngx_http_anti_module);
+    ancf = ngx_http_get_module_loc_conf(r, ngx_http_anti_module); // 获取配置信息
 
-    // 只是针对IPV4的请求访问，UNIX域请求和IPV6不做处理
-    if (r->connection->sockaddr->sa_family != AF_INET) {
+
+    // 2. 根据类别组装查询的KEY
+    if (r->connection->sockaddr->sa_family != AF_INET) { // 只是针对IPV4的请求访问，UNIX域请求和IPV6不做处理
         return NGX_OK;
     }
 
-    // 获取client ip信息
     struct sockaddr_in *sin;
     
     sin = (struct sockaddr_in *) r->connection->sockaddr;
@@ -225,32 +230,24 @@ ngx_http_anti_handler(ngx_http_request_t *r){
         return NGX_OK;
     }
 
-    // 获取request uri信息
     u_char * uri;
-    uri = r->uri.data;
+    uri = r->uri.data;  // 获取request uri信息
 
     if (uri == NULL) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, 
-            "get request uri is error");
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "get request uri is error");
     }
 
-    // 整理成key
-    ngx_str_t key = ngx_string("sss");
-    ngx_int_t len = key.len + ngx_strlen(uri);
-  
-    
-    // sprintf(str, "ip=%d", (int)s_addr);   
-    // ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
+    ngx_str_t request_str = ngx_string("/sisisisis?sdajfda"); // 测试使用请求参数
 
-    if (len <= 0) {
-        return NGX_OK;
+    // 3. 判断请求是否被冻结
+    anti_hash_t *frozen_base = anti_hash_find(ancf->anti_frozen_hash, &request_str, ancf->anti_frozen_hash_size);
+    if (frozen_base != NULL) {
+        if ( ((anti_hash_frozen_t *) frozen_base->hash_val)->expire_tm > now->sec ) { // 已过期
+            return NGX_ERROR; 
+        }
     }
 
-    ngx_time_t *now;
-    ngx_timezone_update();
-    now = ngx_timeofday();
-    ngx_time_update();
-
+    // 4.加锁
 
     // 5.1 判断采集开始周期，超过周期，清空内存
     anti_hash_t  *tmp1, *tmp2;
@@ -270,30 +267,40 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     }
 
     // 6. 查找是否在收集的hashtable中  // 测试hashtable find
-    ngx_str_t test_str = ngx_string("/sisisisis?sdajfda");
+    anti_hash_t * hash_temp = anti_hash_find(ancf->anti_acqu_hash, &request_str, ancf->anti_acqu_hash_size);
 
-    anti_hash_t * hash_temp = anti_hash_find(ancf->anti_acqu_hash, &test_str, 
-            ancf->anti_acqu_hash_size);
+    anti_hash_acqu_t hash_acqu = {1};
+    anti_hash_acqu_t *tmp      = NULL;
 
-    anti_hash_acqu_t *hash_acqu = NULL;
+    anti_hash_frozen_t hash_frozen = {1, 0};
     // anti_acqu_hash_t *hash_temp = anti_hash_tbl_find(ancf->anti_acqu_hash, &test_str, ancf->anti_acqu_hash_size);
    
     ngx_int_t num;
     if (hash_temp != NULL) {
-        // anti_hash_tbl_set(ancf, &test_str, hash_temp->acqu_val + 1);
-        hash_acqu        = hash_temp->hash_val;
-        hash_acqu->count = hash_acqu->count + 1; // 加锁保证原子性
-        num = hash_acqu->count;
+        tmp        = (anti_hash_acqu_t *) hash_temp->hash_val;// 加锁保证原子性
+        tmp->count = tmp->count + 1; 
+        num        = tmp->count;
 
         // 6.1.1 判断是否超过阈值, 写冻结的hashtable中
-        if (hash_acqu->count > ancf->anti_threshold) {
+        if (tmp->count > ancf->anti_threshold) {
+            hash_frozen.expire_tm = now->sec + ancf->anti_frozen_time;
+           
+            anti_hash_set((ngx_slab_pool_t *)(ancf->anti_shm_zone->shm.addr), 
+                    ancf->anti_frozen_hash, 
+                    ancf->anti_frozen_hash_size, 
+                    &request_str, 
+                    &hash_frozen, 
+                    sizeof(anti_hash_frozen_t));
             return NGX_ERROR;
         }
 
     } else {
-        hash_acqu->count = 1;
-        anti_hash_set((ngx_slab_pool_t *)(ancf->anti_shm_zone->shm.addr), ancf->anti_acqu_hash,
-                 ancf->anti_acqu_hash_size, &test_str, hash_acqu, sizeof(anti_hash_acqu_t));
+        anti_hash_set((ngx_slab_pool_t *)(ancf->anti_shm_zone->shm.addr), 
+                    ancf->anti_acqu_hash, 
+                    ancf->anti_acqu_hash_size,
+                    &request_str, 
+                    &hash_acqu, 
+                    sizeof(anti_hash_acqu_t));
         num = 1;
     }
 
@@ -301,13 +308,6 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     char str[100];
     sprintf(str, "request_tm=%ld", num);
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
-
-
-
-
-    // 写到共享内存
-
-    
 
     return NGX_OK;
 }
@@ -328,6 +328,9 @@ anti_hash_find(anti_hash_t **header, ngx_str_t * find_str, ngx_int_t hash_size) 
 
     while (hash_temp != NULL ) {
 
+        int i = ngx_strcmp(hash_temp->hash_key.data, find_str->data);
+        i ++;
+        
         if (0 == ngx_strcmp(hash_temp->hash_key.data, find_str->data)) {
             return hash_temp;
         }
@@ -350,17 +353,10 @@ anti_hash_set(ngx_slab_pool_t * shpool,  anti_hash_t **header, ngx_int_t hash_si
 
     anti_hash_t *anti_hash;
     anti_hash_t *anti_hash_alloc;
+    uint32_t hash_base_size;
     
-    // ngx_int_t anti_acqu_hash_size  = ancf->anti_acqu_hash_size;
-    uint32_t hash_base_size = ngx_murmur_hash2(key->data, key->len);
-    anti_hash = header[hash_base_size % hash_size];
-
-    while (anti_hash != NULL) {
-        anti_hash = anti_hash->next;
-    }
-
     // 存储大小
-    ngx_int_t size = sizeof(anti_hash_t) + key->len + len;
+    ngx_int_t size = sizeof(anti_hash_t) + key->len + len + 1;
 
     anti_hash_alloc = ngx_slab_alloc(shpool, size);
     if (anti_hash_alloc == NULL) {
@@ -374,9 +370,24 @@ anti_hash_set(ngx_slab_pool_t * shpool,  anti_hash_t **header, ngx_int_t hash_si
     ngx_memcpy(anti_hash_alloc->hash_key.data, key->data, key->len);
 
     // 处理value
-    ngx_memcpy(anti_hash_alloc->hash_key.data + key->len, val, len);
-    
-    anti_hash->next = anti_hash_alloc;
+    anti_hash_alloc->hash_val = anti_hash_alloc->hash_key.data + key->len + 1;
+    ngx_memcpy(anti_hash_alloc->hash_val, val, len);
+
+    // ngx_int_t anti_acqu_hash_size  = ancf->anti_acqu_hash_size;
+    hash_base_size = ngx_murmur_hash2(key->data, key->len);
+    anti_hash      = header[hash_base_size % hash_size];
+
+   
+    if (anti_hash == NULL) {
+        header[hash_base_size % hash_size] = anti_hash_alloc;
+    } else {
+        while (anti_hash->next != NULL) {
+            anti_hash = anti_hash->next;
+        }
+        anti_hash->next = anti_hash_alloc;
+    }
+
+    printf("hello world");
 
     return NGX_OK;
 }
