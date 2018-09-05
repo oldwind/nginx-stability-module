@@ -63,7 +63,7 @@ anti_hash_find(anti_hash_t **header, ngx_str_t * find_str, ngx_int_t hash_size);
 
 
 static ngx_int_t 
-anti_hash_tbl_del(ngx_http_anti_conf_t *ancf, void * dp); 
+anti_hash_del(ngx_http_anti_conf_t *ancf, void * dp); 
 
 static ngx_int_t 
 anti_shm_init(ngx_shm_zone_t *zone, void *data);
@@ -251,7 +251,7 @@ ngx_http_anti_handler(ngx_http_request_t *r){
 
     // 5.1 判断采集开始周期，超过周期，清空内存
     anti_hash_t  *tmp1, *tmp2;
-    if (ancf->begin_tm > 0 && now->sec - ancf->begin_tm > ancf->anti_acqu_cycle) {
+    if (ancf->begin_tm < 0 || now->sec - ancf->begin_tm > ancf->anti_acqu_cycle) {
         for (int i = 0; i < ancf->anti_acqu_hash_size; i ++) {
             if (ancf->anti_acqu_hash[i] == NULL) {
                 continue;
@@ -261,7 +261,7 @@ ngx_http_anti_handler(ngx_http_request_t *r){
             while (tmp1 != NULL) {
                 tmp2 = tmp1;
                 tmp1 = tmp1->next;
-                anti_hash_tbl_del(ancf, tmp2);
+                anti_hash_del(ancf, tmp2);
             }
         }
     }
@@ -328,9 +328,6 @@ anti_hash_find(anti_hash_t **header, ngx_str_t * find_str, ngx_int_t hash_size) 
 
     while (hash_temp != NULL ) {
 
-        int i = ngx_strcmp(hash_temp->hash_key.data, find_str->data);
-        i ++;
-        
         if (0 == ngx_strcmp(hash_temp->hash_key.data, find_str->data)) {
             return hash_temp;
         }
@@ -394,7 +391,7 @@ anti_hash_set(ngx_slab_pool_t * shpool,  anti_hash_t **header, ngx_int_t hash_si
 
 
 static ngx_int_t 
-anti_hash_tbl_del(ngx_http_anti_conf_t *ancf, void * dp) 
+anti_hash_del(ngx_http_anti_conf_t *ancf, void * dp) 
 {
     ngx_slab_pool_t  *shpool;
 
