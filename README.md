@@ -4,8 +4,8 @@
 - 页面主要提供location的防刷功能，通过指令配置，针对请求超过阈值的IP + URL，返回403， 进行请求冻结
 
 - @todo list
-- 1、多维度防刷 支持IP防刷，URL防刷，IP+URL综合防刷
-- 2、优化hashtable存储结构
+    - 1、多维度防刷 支持IP防刷，URL防刷，IP+URL综合防刷
+    - 2、优化hashtable存储结构
 
 #### 2、编译安装
     nginx的release版本下加入本模块
@@ -18,6 +18,34 @@
 
 #### 3、nginx.conf配置说明
 
+##### 1. anti_shm_size : [1 .. 102400000000]  <br/> 
+> context : location
+> default : on
+> 说明 : 申请数据采集和冻结功能的共享内存大小
+   
+##### 2. anti_acqu_cycle : [ 1 .. 102400000000]  <br/> 
+> context : location
+> default : on
+> 说明 : 数据采集的周期，单位是秒
 
+##### 3. anti_threshold : [ 1 .. 102400000000]  <br/> 
+> context : location
+> default : 10000
+> 说明 : 启动冻结功能的阈值，单位是秒
+   
+##### 4. anti_frozen_time : [ 1 .. 102400000000]  <br/> 
+> context : location
+> default : 60
+> 说明 : 启动冻结的时长
+
+##### 5. anti_acqu_hash_size : [ 1 .. 102400000000]  <br/> 
+> context : location
+> default : 128
+> 说明 : 数据采集存储的hashtable 数组的大小，并发越高，该值建议设大
+
+##### 6. anti_frozen_hash_size : [ 1 .. 102400000000]  <br/> 
+> context : location
+> default : 128
+> 说明 : 服务冻结存储的hashtable 数组的大小，冻结数据越多，该值建议设大
 
 

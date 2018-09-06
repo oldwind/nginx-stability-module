@@ -543,9 +543,9 @@ ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
     ngx_conf_merge_value(conf->anti_shm_size, prev->anti_shm_size, 8096);
     ngx_conf_merge_value(conf->anti_acqu_cycle, prev->anti_acqu_cycle, 60);
     ngx_conf_merge_value(conf->anti_acqu_type, prev->anti_acqu_type, 1);
-    ngx_conf_merge_value(conf->anti_threshold, prev->anti_threshold, 3);
+    ngx_conf_merge_value(conf->anti_threshold, prev->anti_threshold, 10000);
     ngx_conf_merge_value(conf->anti_frozen_innernet, prev->anti_frozen_innernet, 1);
-    ngx_conf_merge_value(conf->anti_frozen_time, prev->anti_frozen_time, 10);
+    ngx_conf_merge_value(conf->anti_frozen_time, prev->anti_frozen_time, 60);
     ngx_conf_merge_value(conf->anti_acqu_hash_size, prev->anti_acqu_hash_size, 128);
     ngx_conf_merge_value(conf->anti_frozen_hash_size, prev->anti_frozen_hash_size, 128);
 
