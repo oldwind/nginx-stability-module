@@ -41,8 +41,6 @@ typedef struct {
     ngx_int_t       anti_frozen_time;
     ngx_int_t       anti_acqu_hash_size;
     ngx_int_t       anti_frozen_hash_size; 
-
-    // queue，支持数据采集的周期形成，后期实现
     
     ngx_int_t  begin_tm;  // 采集周期开始时间
 
@@ -206,33 +204,41 @@ static ngx_int_t
 ngx_http_anti_handler(ngx_http_request_t *r){
     
     // 1. 系统操作， 获取内存中的当前时间 
-    ngx_time_t *now;
+    anti_hash_acqu_t hash_acqu     = {1};
+    anti_hash_acqu_t *tmp          = NULL;
+    anti_hash_frozen_t hash_frozen = {1, 0};
+    ngx_time_t           *now;
+    ngx_http_anti_conf_t *ancf;
+    struct sockaddr_in   *sin;
+    ngx_int_t s_addr;
+    u_char *uri;
+
+
     ngx_timezone_update();
     now = ngx_timeofday();
     ngx_time_update();
     
-    ngx_http_anti_conf_t * ancf;
+    
     ancf = ngx_http_get_module_loc_conf(r, ngx_http_anti_module); // 获取配置信息
 
+    if (ancf->anti_acqu_hash == NULL) {
+        return NGX_OK;;
+    }
 
     // 2. 根据类别组装查询的KEY
     if (r->connection->sockaddr->sa_family != AF_INET) { // 只是针对IPV4的请求访问，UNIX域请求和IPV6不做处理
         return NGX_OK;
     }
 
-    struct sockaddr_in *sin;
-    
-    sin = (struct sockaddr_in *) r->connection->sockaddr;
-
-    ngx_int_t s_addr = sin->sin_addr.s_addr;
+    sin     = (struct sockaddr_in *) r->connection->sockaddr;
+    s_addr  = sin->sin_addr.s_addr;
     if (s_addr <= 0) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "get client addr error");
         return NGX_OK;
     }
 
-    u_char * uri;
+    
     uri = r->uri.data;  // 获取request uri信息
-
     if (uri == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "get request uri is error");
     }
@@ -250,31 +256,29 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     // 4.加锁
 
     // 5.1 判断采集开始周期，超过周期，清空内存
+    //     改成pool方式，清空pool即可， 不可以在cf的pool中处理
     anti_hash_t  *tmp1, *tmp2;
     if (ancf->begin_tm < 0 || now->sec - ancf->begin_tm > ancf->anti_acqu_cycle) {
+        ancf->begin_tm = now->sec;
         for (int i = 0; i < ancf->anti_acqu_hash_size; i ++) {
             if (ancf->anti_acqu_hash[i] == NULL) {
                 continue;
             }
-            ancf->anti_acqu_hash[i] = NULL;
             tmp1 = ancf->anti_acqu_hash[i]->next;
             while (tmp1 != NULL) {
                 tmp2 = tmp1;
                 tmp1 = tmp1->next;
                 anti_hash_del(ancf, tmp2);
             }
+            ancf->anti_acqu_hash[i] = NULL;
         }
     }
 
     // 6. 查找是否在收集的hashtable中  // 测试hashtable find
     anti_hash_t * hash_temp = anti_hash_find(ancf->anti_acqu_hash, &request_str, ancf->anti_acqu_hash_size);
 
-    anti_hash_acqu_t hash_acqu = {1};
-    anti_hash_acqu_t *tmp      = NULL;
-
-    anti_hash_frozen_t hash_frozen = {1, 0};
+    
     // anti_acqu_hash_t *hash_temp = anti_hash_tbl_find(ancf->anti_acqu_hash, &test_str, ancf->anti_acqu_hash_size);
-   
     ngx_int_t num;
     if (hash_temp != NULL) {
         tmp        = (anti_hash_acqu_t *) hash_temp->hash_val;// 加锁保证原子性
@@ -284,13 +288,19 @@ ngx_http_anti_handler(ngx_http_request_t *r){
         // 6.1.1 判断是否超过阈值, 写冻结的hashtable中
         if (tmp->count > ancf->anti_threshold) {
             hash_frozen.expire_tm = now->sec + ancf->anti_frozen_time;
+
+            if (frozen_base != NULL) {
+                ((anti_hash_frozen_t *) frozen_base->hash_val)->expire_tm = hash_frozen.expire_tm;
+                ((anti_hash_frozen_t *) frozen_base->hash_val)->count ++;
            
-            anti_hash_set((ngx_slab_pool_t *)(ancf->anti_shm_zone->shm.addr), 
+            } else {
+                anti_hash_set((ngx_slab_pool_t *)(ancf->anti_shm_zone->shm.addr), 
                     ancf->anti_frozen_hash, 
                     ancf->anti_frozen_hash_size, 
                     &request_str, 
                     &hash_frozen, 
                     sizeof(anti_hash_frozen_t));
+            } 
             return NGX_ERROR;
         }
 
@@ -383,9 +393,6 @@ anti_hash_set(ngx_slab_pool_t * shpool,  anti_hash_t **header, ngx_int_t hash_si
         }
         anti_hash->next = anti_hash_alloc;
     }
-
-    printf("hello world");
-
     return NGX_OK;
 }
 
@@ -543,11 +550,11 @@ ngx_http_anti_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child) {
 
     ngx_conf_merge_value(conf->anti_open, prev->anti_open, 0);
     ngx_conf_merge_value(conf->anti_shm_size, prev->anti_shm_size, 8096);
-    ngx_conf_merge_value(conf->anti_acqu_cycle, prev->anti_acqu_cycle, 1);
+    ngx_conf_merge_value(conf->anti_acqu_cycle, prev->anti_acqu_cycle, 60);
     ngx_conf_merge_value(conf->anti_acqu_type, prev->anti_acqu_type, 1);
-    ngx_conf_merge_value(conf->anti_threshold, prev->anti_threshold, 10);
+    ngx_conf_merge_value(conf->anti_threshold, prev->anti_threshold, 3);
     ngx_conf_merge_value(conf->anti_frozen_innernet, prev->anti_frozen_innernet, 1);
-    ngx_conf_merge_value(conf->anti_frozen_time, prev->anti_frozen_time, 300);
+    ngx_conf_merge_value(conf->anti_frozen_time, prev->anti_frozen_time, 10);
     ngx_conf_merge_value(conf->anti_acqu_hash_size, prev->anti_acqu_hash_size, 128);
     ngx_conf_merge_value(conf->anti_frozen_hash_size, prev->anti_frozen_hash_size, 128);
 
