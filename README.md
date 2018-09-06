@@ -34,9 +34,9 @@
 > 说明 : 启动冻结功能的阈值，单位是秒
    
 ##### 4. anti_frozen_time : [ 1 .. 102400000000]  <br/> 
-> context : location
-> default : 60
-> 说明 : 启动冻结的时长
+> context : location <br/> 
+> default : 60 <br/> 
+> 说明 : 启动冻结的时长 <br/> 
 
 ##### 5. anti_acqu_hash_size : [ 1 .. 102400000000]  <br/> 
 > context : location
