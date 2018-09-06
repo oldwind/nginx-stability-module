@@ -186,20 +186,6 @@ ngx_module_t  ngx_http_anti_module = {
 };
 
 
-// 1、判断配置的监控类别 (IP, IP + URL， IP +args参数等)
-// 2、根据类别组装查询的KEY
-// 3、从冻结的hashtable里面查询KEY是否存在，@todo 同时清理
-//    3.1 如果存在，并且没有过期，返回请求forbidden
-//    3.2 如果不存在，或者存在的但是过期， 继续4
-// 4、加共享锁
-// 5、判断数据采集的hashtable是否到周期
-//    5.1 到周期，循环清理内存
-//    5.2 未到周期，继续6
-// 6、判断KEY在数据采集hashtable中是否存在
-//    6.1 存在， +1, 判断是否超过阈值
-//        6.1.1 超过阈值，查询冻结表是否存在，存在则更新解冻时间，返回forbidden
-//    6.2 不存在， 增加KEY，初始化1
-// 7、关闭共享锁 (4-7之间异常情况关闭贡献锁)
 static ngx_int_t
 ngx_http_anti_handler(ngx_http_request_t *r){
     
@@ -207,15 +193,14 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     anti_hash_acqu_t hash_acqu     = {1};
     anti_hash_acqu_t *tmp          = NULL;
     anti_hash_frozen_t hash_frozen = {1, 0};
-    ngx_time_t           *now;
     ngx_http_anti_conf_t *ancf;
+    ngx_time_t           *now;
     struct sockaddr_in   *sin;
     char  *client_ip;
     ngx_int_t s_addr;
     u_char *uri;
 
 
-    // 缓存获取当前时间
     ngx_timezone_update();
     now = ngx_timeofday();
     ngx_time_update();
@@ -231,8 +216,8 @@ ngx_http_anti_handler(ngx_http_request_t *r){
         return NGX_OK;
     }
 
-    sin     = (struct sockaddr_in *) r->connection->sockaddr;
-    s_addr  = sin->sin_addr.s_addr;
+    sin        = (struct sockaddr_in *) r->connection->sockaddr;
+    s_addr     = sin->sin_addr.s_addr;
     client_ip  = inet_ntoa(sin->sin_addr);
 
     if (s_addr <= 0) {
@@ -248,7 +233,6 @@ ngx_http_anti_handler(ngx_http_request_t *r){
 
     // 2.1 判断是否是内网IP
 
-
     //拼装参数
     char req_str[2048];
     ngx_int_t client_ip_len = ngx_strlen(client_ip);
@@ -263,11 +247,10 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     anti_hash_t *frozen_base = anti_hash_find(ancf->anti_frozen_hash, &request_str, ancf->anti_frozen_hash_size);
     if (frozen_base != NULL) {
         if ( ((anti_hash_frozen_t *) frozen_base->hash_val)->expire_tm > now->sec ) { // 已过期
-            return NGX_ERROR; 
+            return NGX_HTTP_FORBIDDEN; 
         }
     }
 
-    // 4.加锁
 
     // 5.1 判断采集开始周期，超过周期，清空内存
     //     改成pool方式，清空pool即可， 不可以在cf的pool中处理
@@ -288,18 +271,16 @@ ngx_http_anti_handler(ngx_http_request_t *r){
                 ancf->anti_acqu_hash[i] = NULL;
             }
         }
+    } else {
+        ancf->begin_tm = now->sec;
     }
 
     // 6. 查找是否在收集的hashtable中  // 测试hashtable find
     anti_hash_t * hash_temp = anti_hash_find(ancf->anti_acqu_hash, &request_str, ancf->anti_acqu_hash_size);
-
-    
-    // anti_acqu_hash_t *hash_temp = anti_hash_tbl_find(ancf->anti_acqu_hash, &test_str, ancf->anti_acqu_hash_size);
-    ngx_int_t num;
+  
     if (hash_temp != NULL) {
         tmp        = (anti_hash_acqu_t *) hash_temp->hash_val;// 加锁保证原子性
         tmp->count = tmp->count + 1; 
-        num        = tmp->count;
 
         // 6.1.1 判断是否超过阈值, 写冻结的hashtable中
         if (tmp->count > ancf->anti_threshold) {
@@ -327,13 +308,7 @@ ngx_http_anti_handler(ngx_http_request_t *r){
                     &request_str, 
                     &hash_acqu, 
                     sizeof(anti_hash_acqu_t));
-        num = 1;
     }
-
-
-    char str[100];
-    sprintf(str, "request_tm=%ld", num);
-    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, str);
 
     return NGX_OK;
 }
