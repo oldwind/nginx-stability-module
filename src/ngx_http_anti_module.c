@@ -210,19 +210,20 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     ngx_time_t           *now;
     ngx_http_anti_conf_t *ancf;
     struct sockaddr_in   *sin;
+    char  *client_ip;
     ngx_int_t s_addr;
     u_char *uri;
 
 
+    // 缓存获取当前时间
     ngx_timezone_update();
     now = ngx_timeofday();
     ngx_time_update();
     
-    
     ancf = ngx_http_get_module_loc_conf(r, ngx_http_anti_module); // 获取配置信息
 
     if (ancf->anti_acqu_hash == NULL) {
-        return NGX_OK;;
+        return NGX_OK;
     }
 
     // 2. 根据类别组装查询的KEY
@@ -232,18 +233,31 @@ ngx_http_anti_handler(ngx_http_request_t *r){
 
     sin     = (struct sockaddr_in *) r->connection->sockaddr;
     s_addr  = sin->sin_addr.s_addr;
+    client_ip  = inet_ntoa(sin->sin_addr);
+
     if (s_addr <= 0) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "get client addr error");
         return NGX_OK;
     }
 
-    
     uri = r->uri.data;  // 获取request uri信息
     if (uri == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0, "get request uri is error");
+        return NGX_OK; 
     }
 
-    ngx_str_t request_str = ngx_string("/sisisisis?sdajfda"); // 测试使用请求参数
+    // 2.1 判断是否是内网IP
+
+
+    //拼装参数
+    char req_str[2048];
+    ngx_int_t client_ip_len = ngx_strlen(client_ip);
+    ngx_memcpy(req_str, client_ip, client_ip_len);
+    ngx_memcpy(req_str + client_ip_len, uri, r->uri.len);
+
+    ngx_str_t request_str; // 测试使用请求参数
+    request_str.len  = client_ip_len +  r->uri.len;
+    request_str.data = (u_char *)req_str;
 
     // 3. 判断请求是否被冻结
     anti_hash_t *frozen_base = anti_hash_find(ancf->anti_frozen_hash, &request_str, ancf->anti_frozen_hash_size);
@@ -258,19 +272,21 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     // 5.1 判断采集开始周期，超过周期，清空内存
     //     改成pool方式，清空pool即可， 不可以在cf的pool中处理
     anti_hash_t  *tmp1, *tmp2;
-    if (ancf->begin_tm < 0 || now->sec - ancf->begin_tm > ancf->anti_acqu_cycle) {
-        ancf->begin_tm = now->sec;
-        for (int i = 0; i < ancf->anti_acqu_hash_size; i ++) {
-            if (ancf->anti_acqu_hash[i] == NULL) {
-                continue;
+    if (ancf->begin_tm > 0 ) {
+        if (now->sec - ancf->begin_tm > ancf->anti_acqu_cycle) {
+            ancf->begin_tm = now->sec;
+            for (int i = 0; i < ancf->anti_acqu_hash_size; i ++) {
+                if (ancf->anti_acqu_hash[i] == NULL) {
+                    continue;
+                }
+                tmp1 = ancf->anti_acqu_hash[i]->next;
+                while (tmp1 != NULL) {
+                    tmp2 = tmp1;
+                    tmp1 = tmp1->next;
+                    anti_hash_del(ancf, tmp2);
+                }
+                ancf->anti_acqu_hash[i] = NULL;
             }
-            tmp1 = ancf->anti_acqu_hash[i]->next;
-            while (tmp1 != NULL) {
-                tmp2 = tmp1;
-                tmp1 = tmp1->next;
-                anti_hash_del(ancf, tmp2);
-            }
-            ancf->anti_acqu_hash[i] = NULL;
         }
     }
 
@@ -338,7 +354,7 @@ anti_hash_find(anti_hash_t **header, ngx_str_t * find_str, ngx_int_t hash_size) 
 
     while (hash_temp != NULL ) {
 
-        if (0 == ngx_strcmp(hash_temp->hash_key.data, find_str->data)) {
+        if (0 == ngx_strncmp(hash_temp->hash_key.data, find_str->data, hash_temp->hash_key.len)) {
             return hash_temp;
         }
 
