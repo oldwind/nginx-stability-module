@@ -298,7 +298,7 @@ ngx_http_anti_handler(ngx_http_request_t *r){
                     &hash_frozen, 
                     sizeof(anti_hash_frozen_t));
             } 
-            return NGX_ERROR;
+            return NGX_HTTP_FORBIDDEN;
         }
 
     } else {
