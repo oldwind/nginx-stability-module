@@ -9,12 +9,10 @@
 
 #### 2、编译安装
     nginx的release版本下加入本模块
-
     ./configure --prefix=/Users/baidu/dev/nginx --add-module=/{$USER_PATH}/github/nginx-stability-module/
-
-- --prifix 安转目录
-- --add-module 加入第三方模块地址
-- --with-http_stub_status_module 加入非默认的第三方库地址
+    - --prifix 安转目录
+    - --add-module 加入第三方模块地址
+    - --with-http_stub_status_module 加入非默认的第三方库地址
 
 #### 3、nginx.conf配置说明
 
