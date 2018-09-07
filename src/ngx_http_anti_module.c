@@ -247,6 +247,11 @@ ngx_http_anti_handler(ngx_http_request_t *r){
     anti_hash_t *frozen_base = anti_hash_find(ancf->anti_frozen_hash, &request_str, ancf->anti_frozen_hash_size);
     if (frozen_base != NULL) {
         if ( ((anti_hash_frozen_t *) frozen_base->hash_val)->expire_tm > now->sec ) { // 已过期
+            ngx_log_error(NGX_LOG_ERR, 
+                    r->connection->log, 
+                    0, 
+                    "request frozen, expire_tm = %d",
+                    ((anti_hash_frozen_t *) frozen_base->hash_val)->expire_tm);
             return NGX_HTTP_FORBIDDEN; 
         }
     }
@@ -298,6 +303,12 @@ ngx_http_anti_handler(ngx_http_request_t *r){
                     &hash_frozen, 
                     sizeof(anti_hash_frozen_t));
             } 
+            ngx_log_error(NGX_LOG_ERR, 
+                    r->connection->log, 
+                    0, 
+                    "request frozen, anti_threshold = %d && tmp->count = %d", 
+                    ancf->anti_threshold, 
+                    tmp->count);
             return NGX_HTTP_FORBIDDEN;
         }
 
